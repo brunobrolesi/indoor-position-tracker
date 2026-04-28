@@ -1,0 +1,13 @@
+# ESP-IDF build output
+build/
+.cache
+
+# Generated sdkconfig (project-specific, tracked via sdkconfig.defaults)
+sdkconfig
+sdkconfig.old
+
+# Managed components (fetched via idf.py update-dependencies)
+managed_components/
+
+# Dependency lock (regenerated from idf_component.yml)
+dependencies.lock

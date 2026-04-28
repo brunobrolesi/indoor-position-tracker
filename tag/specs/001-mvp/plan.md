@@ -16,16 +16,46 @@ This plan describes how to implement the ESP32 BLE tag firmware for the indoor p
 | A4 | `BLE_TX_POWER_DBM = 0` (radio TX power) | Default value; valid range -12 to +9 dBm |
 | A5 | `BLE_ADV_INTERVAL_MS = 100` | Default; valid range 50–500 ms |
 | A6 | OTA_SERVER_URL points to a Python HTTP server on the local lab network | No production server required for MVP |
-| A7 | The project uses ESP-IDF v6.0's `esp_bt` / NimBLE or Bluedroid stack for Extended Advertising | ESP-IDF v6.0 supports Extended Advertising via `esp_gap_ble_api`; confirm API surface before coding T3 |
-| Q1 | Which BLE stack is preferred: Bluedroid or NimBLE? Extended Advertising API differs between them | **Must answer before T3** |
-| Q2 | Should the NVS namespace be `tag_nvs` or follow a project-wide convention? | Decide before T6 |
-| Q3 | Is there a project-wide `sdkconfig` baseline, or is each component responsible for its own? | Decide before T1 |
+| A7 | The project uses ESP-IDF v6.0's NimBLE stack for Extended Advertising | NimBLE chosen over Bluedroid: cleaner Extended Advertising API in IDF v6.0, lower memory footprint, actively maintained. See T0. |
+| Q1 | Which BLE stack is preferred: Bluedroid or NimBLE? Extended Advertising API differs between them | **Resolved — NimBLE. See T0.** |
+| Q2 | Should the NVS namespace be `tag_nvs` or follow a project-wide convention? | **Resolved — `tag_nvs` is the chosen namespace.** |
+| Q3 | Is there a project-wide `sdkconfig` baseline, or is each component responsible for its own? | **Resolved — each component owns its own `sdkconfig.defaults`. The tag firmware is a self-contained ESP-IDF project under `tag/firmware/`; no shared baseline exists yet. T1 is responsible for the full `sdkconfig.defaults` for this project.** |
 
 ---
 
 ## Task Breakdown
 
 Tasks are ordered by dependency.
+
+---
+
+### T0 — BLE Stack Spike (NimBLE Extended Advertising)
+
+**Description**
+Validate that ESP-IDF v6.0's NimBLE stack supports Extended Advertising with Coded PHY S=8 on the target hardware (ESP32-WROOM-32) before any integration work begins. This task resolves Q1 and de-risks T3.
+
+**Rationale for NimBLE over Bluedroid**
+NimBLE provides a cleaner Extended Advertising API in IDF v6.0 (`ble_gap_ext_adv_*`), has a lower memory footprint (~20 KB less heap), and is the actively maintained stack for new features in ESP-IDF. Bluedroid's Extended Advertising support is available but its API is more complex and less documented.
+
+**Acceptance Criteria**
+- `sdkconfig` sets `CONFIG_BT_NIMBLE_ENABLED=y` and `CONFIG_BT_BLUEDROID_ENABLED=n`.
+- A minimal sketch (separate from the main project) starts an Extended Advertising set with Coded PHY S=8 and transmits at least one packet visible in nRF Connect.
+- Coded PHY S=8 confirmed via nRF Sniffer or nRF Connect PHY display.
+- No memory allocation failures in `idf.py monitor` during BLE init.
+
+**Inputs / Outputs**
+- Output: confirmed NimBLE API path documented in a code comment block at the top of `main/ble_adv.c`; spike branch can be discarded after T3 is merged.
+- Output: the following must be documented as T0 deliverables and carried into T1/T3:
+  1. **Per-packet counter update mechanism** — confirm whether `BLE_GAP_EVENT_ADV_COMPLETE` fires for non-connectable non-scannable Extended Advertising sets on ESP32 (it may not). If not, document that a FreeRTOS task + `esp_timer` at `BLE_ADV_INTERVAL_MS` is required to call `ble_gap_ext_adv_set_adv_data()` before each event.
+  2. **`on_sync` callback pattern** — confirm the NimBLE host async init sequence: `nimble_port_init()` → register `ble_hs_cfg.sync_cb` → `nimble_port_freertos_init()` → wait for `sync_cb` before any `ble_gap_*` call.
+  3. **All required `sdkconfig` flags** for Extended Advertising — at minimum: `CONFIG_BT_NIMBLE_EXT_ADV=y`, `CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT` (tune upward if adv data > 31 bytes), `CONFIG_BT_NIMBLE_HS_TASK_STACK_SIZE` (minimum 4096 recommended). Record exact values that pass the smoke test.
+  4. **Heap usage** during BLE init — record free heap before and after `nimble_port_init()` to pre-empt `CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT` exhaustion under Extended Advertising payloads.
+
+**Dependencies**
+None — can run in parallel with T1.
+
+**Testing Notes**
+- If NimBLE Extended Advertising fails on the silicon revision in use, escalate immediately — this invalidates the entire RF implementation path and requires re-evaluating Q1.
 
 ---
 
@@ -38,6 +68,17 @@ Create the ESP-IDF project skeleton under `tag/firmware/`. This includes `CMakeL
 - `idf.py build` succeeds with an empty `app_main()`.
 - `tag_config.h` defines every constant listed below with its placeholder/default value.
 - `sdkconfig.defaults` enables Bluetooth (BLE), disables Classic BT, enables NVS, enables OTA partitions, and sets partition table to `partitions_ota.csv`.
+- `sdkconfig.defaults` includes the following NimBLE-specific settings (exact values confirmed in T0):
+  ```
+  CONFIG_BT_NIMBLE_ENABLED=y
+  CONFIG_BT_BLUEDROID_ENABLED=n
+  CONFIG_BT_NIMBLE_EXT_ADV=y
+  CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+  CONFIG_BT_NIMBLE_HS_TASK_STACK_SIZE=4096
+  CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=1
+  CONFIG_BT_NIMBLE_MAX_EXT_ADV_DATA_LEN=31
+  ```
+  > Note: `CONFIG_BT_NIMBLE_EXT_ADV=y` is NOT enabled by default in ESP-IDF v6.0 — omitting it causes a compile-time error when calling `ble_gap_ext_adv_configure()`. Values above are starting points; adjust based on T0 heap measurements.
 
 **Constants to define in `tag_config.h`**
 
@@ -136,16 +177,38 @@ The sequence counter starts at 0 on boot and increments on every advertising eve
 - Advertising interval is 100 ms ± 10 ms (confirmed with nRF Sniffer or logic analyser).
 - Advertising type is non-connectable, non-scannable (`ADV_TYPE_NONCONN_IND`).
 
+**NimBLE API path (resolved in T0)**
+Use `ble_gap_ext_adv_configure()` + `ble_gap_ext_adv_set_adv_data()` + `ble_gap_ext_adv_start()`. Set `OWN_ADDR_TYPE` to public, PHY to `BLE_HCI_LE_PHY_CODED`, and `secondary_phy` to `BLE_HCI_LE_PHY_CODED` with S=8 coding (`BLE_HCI_LE_PHY_CODED_S8_PREF`).
+
+**NimBLE async initialisation (`on_sync` requirement)**
+NimBLE's host initialises asynchronously. No `ble_gap_*` API may be called before the host signals readiness. The required init sequence is:
+1. `nimble_port_init()` — initialises the host and controller.
+2. Assign `ble_hs_cfg.sync_cb = ble_adv_on_sync` before calling `nimble_port_freertos_init()`.
+3. `nimble_port_freertos_init(nimble_host_task)` — starts the NimBLE host FreeRTOS task.
+4. `ble_adv_on_sync()` is called by the NimBLE host task once the host-controller link is established. All `ble_gap_ext_adv_configure()` / `ble_gap_ext_adv_set_adv_data()` / `ble_gap_ext_adv_start()` calls must happen inside or after this callback.
+5. `ble_adv_init()` (public API) performs steps 1–3. `ble_adv_start()` must be called from `on_sync` context or after `on_sync` has fired (use a FreeRTOS event group or semaphore if calling from `app_main`).
+
+**Sequence counter update mechanism**
+`BLE_GAP_EVENT_ADV_COMPLETE` does **not** fire for non-connectable, non-scannable Extended Advertising sets in ESP-IDF v6.0 NimBLE (confirmed in T0). Therefore the sequence counter must be updated via a periodic software timer:
+- Create an `esp_timer` with period `BLE_ADV_INTERVAL_MS` ms started inside `ble_adv_start()`.
+- On each timer callback: increment `seq`, rebuild the advertising data buffer with the new counter value, call `ble_gap_ext_adv_set_adv_data()` with the updated buffer, then call `ble_gap_ext_adv_start()` with `duration=1` and `max_events=1` so the controller sends exactly one PDU per timer tick.
+- This approach tightly couples the software timer period to the advertising interval; jitter between the timer and the controller scheduler is acceptable (< ±5 ms typical on ESP32 FreeRTOS with `portTICK_PERIOD_MS = 1`).
+
+> **Alternative (if T0 confirms `ADV_COMPLETE` fires):** register a `ble_gap_event_fn` callback for `BLE_GAP_EVENT_ADV_COMPLETE`; increment and resubmit adv data there. Document the confirmed path in `ble_adv.c` header comment.
+
+**Sequence counter concurrency**
+The sequence counter (`uint16_t seq`) must be declared as `static volatile uint16_t`. Since the `esp_timer` callback runs in the ESP timer task context (not `app_main`), protect the increment with `portENTER_CRITICAL_ISR` / `portEXIT_CRITICAL_ISR` or `__atomic_fetch_add(&seq, 1, __ATOMIC_RELAXED)` if the counter is only written from the timer callback (single writer).
+
 **Inputs / Outputs**
 - Input: `tag_config.h` constants.
 - Output: `main/ble_adv.c`, `main/ble_adv.h`; public API: `ble_adv_init()`, `ble_adv_start()`, `ble_adv_stop()`.
 
 **Dependencies**
-T1, T2 (project + partitions must exist).
+T0 (NimBLE spike validated), T1, T2 (project + partitions must exist).
 
 **Testing Notes**
 - Verify with nRF Connect that service UUID `0xFEAA` is present.
-- Capture with nRF Sniffer or Wireshark BLE to confirm Coded PHY.
+- Capture with nRF Sniffer or Wireshark BLE to confirm Coded PHY S=8 (not S=2).
 - Test sequence counter rollover by letting the tag run for ~6553 seconds (or mock counter at 0xFFFE in a unit test).
 - Test `ble_adv_stop()` / `ble_adv_start()` cycle (needed for OTA module).
 
@@ -180,11 +243,12 @@ Configure the ESP-IDF Task Watchdog Timer (TWDT) with a 5-second timeout. The ma
 
 **Acceptance Criteria**
 - Watchdog is initialised with `WDT_TIMEOUT_SEC = 5` seconds.
-- The advertising task feeds the watchdog at least once per second.
+- The **main task** (the FreeRTOS task running `app_main`) is registered with TWDT via `esp_task_wdt_add(NULL)` — `NULL` registers the calling task. There is no separate "advertising task"; NimBLE runs its own internal host task which is not registered.
+- The main loop in `app_main` calls `esp_task_wdt_reset()` every ~1 second (via `vTaskDelay(pdMS_TO_TICKS(1000))`).
 - A simulated hang (infinite loop without feeding) triggers a reset within 5 seconds (test in dev; remove before production flash).
 
 **Inputs / Outputs**
-- Output: watchdog initialisation in `main/app_main.c` using `esp_task_wdt_init()` and `esp_task_wdt_add()`.
+- Output: watchdog initialisation in `main/app_main.c` using `esp_task_wdt_init()` and `esp_task_wdt_add(NULL)`.
 
 **Dependencies**
 T1, T3 (advertising task must exist to be registered with TWDT).
@@ -232,23 +296,39 @@ Implement the OTA module. On boot, check `OTA_TRIGGER_GPIO` level. If LOW (butto
 
 ```
 Boot
+ └─ [Step A — always, every boot] Call esp_ota_mark_app_valid_cancel_rollback()
+ |     This is a no-op if no OTA update is pending validation (cold boot, normal reset).
+ |     If this boot follows a successful OTA, it confirms the new firmware — without it
+ |     the bootloader rolls back on the very next reboot. Must run before any blocking init.
+ └─ Configure OTA_TRIGGER_GPIO pull-up (gpio_set_pull_mode PULLUP_ONLY)
  └─ GPIO LOW? ──Yes──> OTA Mode
+ |                       ├─ ble_adv_stop() — suspend advertising before WiFi init
+ |                       ├─ [WiFi/BLE co-existence] NimBLE host and BT controller remain
+ |                       |   initialised; ESP32 coex arbiter handles radio sharing.
+ |                       |   Do NOT call nimble_port_deinit() — it is unnecessary and slow.
+ |                       |   esp_coex is enabled by default when both BT and WiFi are active.
  |                       ├─ Init WiFi (STA mode)
- |                       ├─ Connect (30s timeout) ──fail──> reboot
- |                       ├─ HTTP GET firmware (60s timeout) ──fail──> reboot
+ |                       ├─ Connect (30s timeout) ──fail──> esp_wifi_disconnect() + esp_wifi_stop() → reboot
+ |                       ├─ HTTP GET firmware (60s timeout) ──fail──> esp_wifi_disconnect() + esp_wifi_stop() → reboot
  |                       ├─ esp_ota_write() stream
  |                       ├─ esp_ota_end() + esp_ota_set_boot_partition()
- |                       └─ esp_restart() → new firmware
+ |                       ├─ esp_wifi_disconnect() + esp_wifi_stop() + esp_wifi_deinit()
+ |                       └─ esp_restart() → new firmware boots
+ |                              └─ Step A above fires first → marks firmware valid → no rollback
  └─ GPIO HIGH? ──No──> Normal mode (BLE advertising)
 ```
 
 **Acceptance Criteria**
+- `OTA_TRIGGER_GPIO` is configured with internal pull-up (`GPIO_PULLUP_ONLY`) before sampling — prevents spurious OTA trigger on custom hardware without external pull-up.
 - Holding `OTA_TRIGGER_GPIO` LOW during boot enters OTA mode.
 - BLE advertising is suspended during OTA (`ble_adv_stop()` called before WiFi init).
 - WiFi connects within 30 seconds; if not, device reboots with previous firmware.
 - Firmware download completes within 60 seconds; if not, device reboots with previous firmware.
-- After successful OTA: device reboots, new firmware runs, BLE advertising resumes.
-- Rollback test: interrupt HTTP server during download → device reboots with original firmware and BLE advertising resumes.
+- `esp_ota_mark_app_valid_cancel_rollback()` is called at the very start of every boot (Step A in the state machine above), before any blocking init. On normal/cold boots this is a no-op. On the first boot after OTA it commits the new firmware; without it the bootloader silently rolls back on the next reboot.
+- After successful OTA: device reboots → Step A confirms new firmware → BLE advertising resumes normally.
+- Rollback test: interrupt HTTP server during download → device reboots → Step A is a no-op (OTA was not committed) → original firmware resumes advertising.
+- Rollback persistence test: after successful OTA, power-cycle the device a **second** time and verify it stays on the new firmware (confirms Step A fired correctly on the post-OTA boot).
+- WiFi is cleanly stopped (`esp_wifi_disconnect()` + `esp_wifi_stop()` + `esp_wifi_deinit()`) on both success and failure paths before rebooting.
 
 **Inputs / Outputs**
 - Output: `main/ota_update.c`, `main/ota_update.h`; public API: `ota_check_and_run()` (returns if GPIO not triggered).
@@ -259,9 +339,10 @@ T1, T2 (OTA partitions), T3 (BLE adv stop/start API).
 
 **Testing Notes**
 - Use `python3 -m http.server 8070` in `tag/firmware/build/` directory to serve `tag.bin`.
-- Test happy path: complete OTA and verify new firmware version reported in logs.
-- Test rollback: kill HTTP server mid-download; verify previous firmware resumes advertising.
+- Test happy path: complete OTA → verify new firmware version reported in logs → power-cycle → verify device stays on new firmware (rollback persistence test).
+- Test rollback: kill HTTP server mid-download → verify previous firmware resumes advertising → confirm `idf.py monitor` shows `ESP_OTA_IMG_INVALID` was never written (i.e. rollback occurred correctly).
 - Test WiFi failure: wrong SSID in constant → verify reboot within 30 s.
+- Test WiFi cleanup: after OTA failure, verify `idf.py monitor` shows WiFi deinitialized before reboot — no leaked tasks or heap.
 
 ---
 
@@ -273,16 +354,25 @@ Wire all modules together in `app_main()` in the correct boot sequence order.
 **Boot sequence**
 
 ```
-1. nvs_flash_init()              // Required for BT and NVS modules
-2. nvs_log_init()                // Read/increment reset counter
-3. led_status_init()             // Configure GPIO
-4. led_status_start()            // Start 1 Hz blink
-5. ota_check_and_run()           // Check GPIO; may not return if OTA triggered
-6. ble_adv_init()                // Init BT stack, configure Extended Adv
-7. ble_adv_start()               // Start advertising
-8. wdt_init()                    // Register main task with TWDT
-9. nvs_log_start_uptime_timer()  // Start 60s NVS persist timer
-10. main loop: feed watchdog every 1s
+1.  nvs_flash_init()                         // Required for BT and NVS modules
+2.  esp_ota_mark_app_valid_cancel_rollback()  // Confirm this firmware is healthy (no-op on
+                                              // cold boot; commits firmware on post-OTA boot).
+                                              // Implemented here AND inside ota_check_and_run()
+                                              // (Step A of T7 state machine). Both paths are
+                                              // identical — this line ensures it runs even if
+                                              // ota_check_and_run() is not reached.
+3.  esp_task_wdt_init(WDT_TIMEOUT_SEC, true) // Init TWDT early — protects all subsequent inits
+    esp_task_wdt_add(NULL)                   // Register the main task (NULL = calling task)
+4.  nvs_log_init()                           // Read/increment reset counter
+5.  led_status_init()                        // Configure GPIO
+6.  led_status_start()                       // Start 1 Hz blink
+7.  ota_check_and_run()                      // Check GPIO (with pull-up); may not return if OTA triggered
+8.  ble_adv_init()                           // nimble_port_init() + register on_sync cb + nimble_port_freertos_init()
+                                              // Returns before on_sync fires — ble_adv_start() is
+                                              // called from on_sync callback internally.
+9.  // ble_adv_start() is called internally from the on_sync callback registered in ble_adv_init()
+10. nvs_log_start_uptime_timer()             // Start 60s NVS persist timer
+11. main loop: esp_task_wdt_reset() + vTaskDelay(pdMS_TO_TICKS(1000))
 ```
 
 **Acceptance Criteria**
@@ -305,22 +395,29 @@ T3, T4, T5, T6, T7 (all modules complete).
 Run the Definition of Done checklist from the spec, record measurements, and publish documentation.
 
 **Deliverables**
-1. `tag/specs/001-mvp/validacao.md` — records:
-   - Average current draw (mA) at 100 ms advertising interval
-   - Packet loss rate (%) measured at 10 m LOS
-   - Boot-to-first-adv latency (ms)
+1. `tag/specs/001-mvp/validacao.md` — records the following with the specific methodology used:
+   - Average current draw (mA): measure with a series shunt resistor (1 Ω) + multimeter in DC current mode, or a USB power meter, at steady-state advertising (≥ 30 s running). Record peak and average.
+   - Packet loss rate (%): capture with nRF Sniffer (Wireshark) for exactly 1000 expected advertising events at 10 m LOS in an indoor corridor (no obstructions). Loss = (1000 − received) / 1000 × 100. Threshold: < 2%.
+   - Boot-to-first-adv latency (ms): measure from power-on (logic analyser trigger on VCC) to first Coded PHY packet captured by nRF Sniffer. Record 5 samples, report min/max/avg.
 2. `tag/firmware/README.md` — includes:
    - Prerequisites (ESP-IDF v6.0, toolchain)
    - How to set constants in `tag_config.h`
    - `idf.py build && idf.py flash` command
    - How to set up OTA HTTP server
    - How to verify with nRF Connect
-3. Git tag `tag-firmware-v1.0` on the delivery commit.
+3. Hardware compatibility: repeat BLE advertising smoke test on **ESP32-WROVER** (has PSRAM — may shift heap layout and affect NimBLE stack allocation). Record result in `validacao.md`.
+4. Git tag `tag-firmware-v1.0` on the delivery commit.
 
 **Acceptance Criteria**
 - All DoD checkboxes in `spec.md` are checked.
-- `validacao.md` exists with measured values.
+- `validacao.md` exists with measured values and measurement methodology.
+- Packet loss < 2% confirmed with methodology above on both WROOM-32 and WROVER.
+- Current draw < 20 mA confirmed and recorded. `validacao.md` must include the battery life calculation: `500 mAh / I_avg_mA = estimated_hours` — confirm ≥ 8 h as required by the spec non-functional guarantee.
+- Source code comments are written in English throughout all `.c` / `.h` files (spec DoD requirement).
 - `README.md` is complete and a new developer can build + flash following it alone.
+
+**Note on 24h stability test**
+The spec lists "24h continuous operation without spontaneous reboot" as a non-functional guarantee. This is explicitly deferred to Sprint 2 per the spec. Do not block `tag-firmware-v1.0` delivery on it, but document it as a known open item in `validacao.md`.
 
 **Dependencies**
 T8 (full firmware working).
@@ -331,11 +428,15 @@ T8 (full firmware working).
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| ESP-IDF v6.0 Extended Advertising API differs significantly between Bluedroid and NimBLE | High | High | Answer Q1 immediately; prototype T3 first in an isolated test project before integrating |
+| ESP-IDF v6.0 Extended Advertising API differs significantly between Bluedroid and NimBLE | High | High | **Resolved — NimBLE chosen (T0).** Prototype in T0 spike before integrating in T3. |
 | `BLE_TX_POWER_1M_DBM` placeholder (-65 dBm) is inaccurate, degrading distance estimates in anchors | Medium | Medium | Flag in `tag_config.h` with a prominent `TODO: measure at 1m` comment; schedule bench measurement before field testing |
-| OTA rollback not working correctly (esp_ota_set_boot_partition not called before esp_restart) | Medium | High | Write explicit rollback test in T7; do not mark T7 done until rollback is confirmed |
+| OTA rollback not working correctly — missing `esp_ota_mark_app_valid_cancel_rollback()` causes silent rollback on every reboot after OTA | Medium | High | Call placed at top of every boot (T7 state machine Step A + T8 boot sequence step 2) — runs as a no-op on cold boots, commits firmware on post-OTA boots. T7 acceptance criteria require rollback persistence test (two reboots after OTA). Do not mark T7 done until persistence test passes. |
 | WiFi credentials hardcoded in firmware (security) | Low (lab) | Low (MVP) | Document in README as MVP-only; add TODO for provisioning in a future sprint |
-| Coded PHY S=8 not supported or incorrectly configured on the chosen ESP32 module variant | Low | High | Verify with nRF Sniffer in T3 before proceeding to integration; confirm ESP32-WROOM-32 supports BLE 5.0 Extended Advertising on the specific silicon revision in use |
+| Coded PHY S=8 not supported or incorrectly configured on the chosen ESP32 module variant | Low | High | Verified in T0 spike before T3 starts; confirm ESP32-WROOM-32 silicon revision supports BLE 5.0 Extended Advertising. Also test on WROVER in T9. |
+| OTA GPIO floats on custom PCB without external pull-up, triggering OTA on every boot | Low | High | T7 requires `gpio_set_pull_mode(OTA_TRIGGER_GPIO, GPIO_PULLUP_ONLY)` before sampling. |
+| Sequence counter data race between BLE stack task and advertising callback | Low | Medium | T3 uses a single-writer `esp_timer` callback for counter updates; atomic fetch-add or `portENTER_CRITICAL_ISR` guard is sufficient. No BLE stack task writes the counter directly. |
+| `CONFIG_BT_NIMBLE_EXT_ADV=y` missing from sdkconfig causes compile-time failure | High | High | **Resolved** — added to T1 `sdkconfig.defaults` required list. T0 confirms exact value. |
+| NimBLE `on_sync` async init ignored, causing runtime `BLE_HS_ENOTSTARTED` errors | High | High | **Resolved** — T3 now specifies the full `nimble_port_init()` → `sync_cb` → `nimble_port_freertos_init()` sequence. T8 boot sequence updated accordingly. |
 
 ---
 

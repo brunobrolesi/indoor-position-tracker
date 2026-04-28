@@ -1,0 +1,23 @@
+{
+  "skill_name": "esp-idf-expert",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Preciso ler um sensor de temperatura DS18B20 no ESP32 e salvar as leituras.",
+      "expected_output": "O assistente deve identificar ambiguidades (chip, frequência de leitura, onde salvar, protocolo 1-Wire) e fazer perguntas antes de implementar.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Me ajuda a conectar meu ESP32-S3 no WiFi e enviar dados via MQTT para o broker mqtt.meuservidor.com na porta 1883. O SSID é 'MinhaRede' e a senha é '12345678'. O topico é 'sensores/temperatura' e preciso publicar a cada 30 segundos. Pode usar IDF v6.0.",
+      "expected_output": "Requisitos suficientemente claros — deve implementar código completo com WiFi STA, MQTT client (esp-mqtt), task FreeRTOS com timer de 30s, tratamento de erros com ESP_RETURN_ON_ERROR, logging com ESP_LOG, e mencionar configuração no menuconfig.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Quero que o ESP32 entre em deep sleep para economizar bateria.",
+      "expected_output": "Deve identificar ambiguidades críticas: fonte de wake-up (timer, GPIO, touch, ULP?), duração do sleep, quais periféricos precisam ser desligados antes, se há WiFi/BT ativos, e se precisa preservar dados via RTC memory.",
+      "files": []
+    }
+  ]
+}
