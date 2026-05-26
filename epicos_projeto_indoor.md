@@ -22,67 +22,6 @@
 
 
 
-## EPIC-02 · Módulo Anchor (Ponto Fixo de Referência)
-
-| Campo | Valor |
-|-------|-------|
-| **Módulo** | Hardware + Firmware |
-| **Stack técnica** | ESP32 · ESP-IDF · BLE · MQTT · WiFi |
-| **Responsável** | Equipe Hardware |
-| **Sprint alvo** | Sprint 1–2 |
-| **Status** | To Do |
-
-### Descrição
-
-Os anchors são os quatro nós fixos instalados em posições conhecidas na planta do ambiente. Cada anchor escaneia continuamente o sinal BLE do tag, mede o RSSI, aplica um pré-filtro EWA (Exponential Weighted Average) para reduzir ruído no chip e publica as leituras via MQTT ao broker. São a interface entre o mundo físico do rádio e o pipeline digital de processamento.
-
-### Contexto e motivação
-
-A posição dos anchors é determinante para a precisão geométrica da trilateração (GDOP). O firmware deve garantir leituras frequentes, com pré-filtro embarcado para reduzir o volume de dados transmitidos sem sacrificar qualidade, e publicação confiável mesmo em condições de rede instável.
-
----
-
-### Requisitos Funcionais
-
-| ID | Descrição | Prioridade |
-|----|-----------|------------|
-| RF-01 | Cada anchor deve escanear o canal BLE e registrar RSSI do tag identificado pelo UUID a cada 200 ms | Must Have |
-| RF-02 | O firmware deve aplicar filtro EWA embarcado com fator alpha = 0.3 (configurável) antes de publicar o RSSI | Must Have |
-| RF-03 | Os dados devem ser publicados no broker MQTT em formato JSON: `{"anchor_id":"A1","rssi":-67.3,"ts":1712345678}` | Must Have |
-| RF-04 | O anchor deve usar tópico MQTT padronizado: `indoor/anchor/{anchor_id}/rssi` | Must Have |
-| RF-05 | O firmware deve reconectar automaticamente ao broker MQTT em até 5 segundos após perda de conexão WiFi | Must Have |
-| RF-06 | As coordenadas físicas (x, y) de cada anchor devem ser configuráveis via `config.h` sem recompilação do restante do firmware | Must Have |
-| RF-07 | O anchor deve publicar heartbeat no tópico `indoor/anchor/{id}/status` a cada 10 segundos indicando uptime e qualidade do link WiFi | Should Have |
-| RF-08 | O firmware deve suportar OTA via WiFi para atualização remota sem deslocamento físico | Should Have |
-| RF-09 | Em caso de ausência de detecção do tag por mais de 2 segundos, publicar RSSI nulo (`null`) para indicar perda de sinal | Must Have |
-
----
-
-### Garantias (Requisitos Não-Funcionais)
-
-| Garantia | Critério de Aceitação |
-|----------|-----------------------|
-| Frequência de publicação | Mínimo de 4 publicações MQTT por segundo por anchor em condições normais de operação |
-| Latência de publicação | Tempo entre scan do RSSI e publicação MQTT < 50 ms |
-| Resiliência de rede | Reconexão automática ao broker em até 5 s após queda de WiFi, sem intervenção manual |
-| Precisão do pré-filtro | EWA reduz desvio padrão do RSSI bruto em no mínimo 30% em ambiente estático |
-| Disponibilidade | Operação contínua por no mínimo 72 horas sem reinicialização; watchdog ativo |
-| Segurança MQTT | Conexão ao broker com autenticação usuário/senha; TLS opcional para ambiente de produção |
-| Posicionamento físico | Anchors instalados em altura de 2–2,5 m, sem obstáculos metálicos a 30 cm de raio |
-
----
-
-### Definition of Done (DoD)
-
-- [ ] Firmware dos 3 anchors compilado, flashado e operando simultaneamente sem conflitos
-- [ ] Publicações MQTT verificadas no broker com ferramenta MQTT Explorer (payload JSON válido)
-- [ ] Frequência mínima de 4 msg/s confirmada por análise de log do broker por 5 minutos
-- [ ] Teste de resiliência: queda e retorno de WiFi simulados; reconexão automática validada
-- [ ] Pré-filtro EWA validado: desvio padrão do RSSI bruto vs. filtrado documentado em ambiente estático
-- [ ] Coordenadas (x, y) de todos os anchors configuradas, documentadas e mapeadas na planta
-- [ ] Heartbeat operando e visível no broker para todos os 3 anchors
-
----
 
 ## EPIC-03 · Módulo Backend (Processamento e API)
 
