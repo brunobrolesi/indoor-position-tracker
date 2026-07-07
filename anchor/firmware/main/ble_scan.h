@@ -9,7 +9,7 @@ typedef struct {
 /* Init NimBLE and start passive scan from the on_sync callback. */
 void ble_scan_init(void);
 
-/* Cancel active scan (called before OTA WiFi init). */
+/* Cancel active scan. */
 void ble_scan_stop(void);
 
 /* Thread-safe read of the latest scan result. */

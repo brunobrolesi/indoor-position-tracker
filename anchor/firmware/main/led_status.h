@@ -3,7 +3,6 @@
 typedef enum {
     LED_CONNECTING,  /* slow blink 500 ms — WiFi or MQTT not yet connected */
     LED_CONNECTED,   /* solid on — WiFi + MQTT active */
-    LED_OTA,         /* fast blink 100 ms — OTA download in progress */
     LED_REBOOT,      /* 3 rapid blinks then off — controlled reboot imminent */
 } led_state_t;
 

@@ -5,7 +5,7 @@
  *   nimble_port_init()
  *   → ble_hs_cfg.sync_cb = ble_scan_on_sync
  *   → nimble_port_freertos_init(nimble_host_task)
- *   → on_sync fires → ble_gap_disc() starts passive scan
+ *   → on_sync fires → ble_gap_ext_disc() starts passive Coded PHY scan
  *
  * Eddystone-UID namespace (10 bytes): 01 9D 8B A3 5D 5F 79 2B 8E 60
  * Eddystone-UID instance  (6 bytes):  90 6F BE CA 32 4A
@@ -29,7 +29,6 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -47,6 +46,7 @@ static SemaphoreHandle_t s_mutex;
 static float    s_rssi_filtered   = 0.0f;
 static bool     s_ewa_initialized = false;
 static int64_t  s_last_seen_ms    = 0;
+static int64_t  s_last_debug_log_ms = 0;
 
 /* --------------------------------------------------------------------------
  * Advertising data parser
@@ -101,23 +101,10 @@ static bool parse_eddystone_uid(const uint8_t *data, uint8_t len)
  * NimBLE GAP event callback (runs in NimBLE host task)
  * -------------------------------------------------------------------------- */
 
-static int gap_event_cb(struct ble_gap_event *event, void *arg)
+static void update_matched_rssi(float rssi_raw)
 {
-    (void)arg;
-
-    if (event->type != BLE_GAP_EVENT_DISC) {
-        return 0;
-    }
-
-    const uint8_t *ad_data = event->disc.data;
-    uint8_t ad_len         = event->disc.length_data;
-
-    if (!parse_eddystone_uid(ad_data, ad_len)) {
-        return 0;
-    }
-
-    float rssi_raw = (float)event->disc.rssi;
     int64_t now_ms = esp_timer_get_time() / 1000;
+    float rssi_filtered_for_log;
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
 
@@ -129,10 +116,42 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                         + (1.0f - ANCHOR_EWA_ALPHA) * s_rssi_filtered;
     }
     s_last_seen_ms = now_ms;
+    rssi_filtered_for_log = s_rssi_filtered;
 
     xSemaphoreGive(s_mutex);
 
-    esp_task_wdt_reset();
+    if (now_ms - s_last_debug_log_ms >= 1000) {
+        ESP_LOGI(TAG, "matched tag raw_rssi=%.1f filtered_rssi=%.1f",
+                 (double)rssi_raw, (double)rssi_filtered_for_log);
+        s_last_debug_log_ms = now_ms;
+    }
+}
+
+static int gap_event_cb(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+
+    const uint8_t *ad_data;
+    uint8_t ad_len;
+    float rssi_raw;
+
+    if (event->type == BLE_GAP_EVENT_EXT_DISC) {
+        ad_data = event->ext_disc.data;
+        ad_len = event->ext_disc.length_data;
+        rssi_raw = (float)event->ext_disc.rssi;
+    } else if (event->type == BLE_GAP_EVENT_DISC) {
+        ad_data = event->disc.data;
+        ad_len = event->disc.length_data;
+        rssi_raw = (float)event->disc.rssi;
+    } else {
+        return 0;
+    }
+
+    if (!parse_eddystone_uid(ad_data, ad_len)) {
+        return 0;
+    }
+
+    update_matched_rssi(rssi_raw);
 
     return 0;
 }
@@ -150,21 +169,26 @@ static void nimble_host_task(void *param)
 
 static void ble_scan_on_sync(void)
 {
-    ESP_LOGI(TAG, "NimBLE host synced — starting passive scan");
+    ESP_LOGI(TAG, "NimBLE host synced — starting Coded PHY passive scan");
 
-    struct ble_gap_disc_params scan_params = {
+    struct ble_gap_ext_disc_params coded_scan_params = {
         .itvl              = (ANCHOR_SCAN_INTERVAL_MS * 1000) / 625,
         .window            = (ANCHOR_SCAN_INTERVAL_MS * 1000) / 625,
-        .filter_policy     = BLE_HCI_SCAN_FILT_NO_WL,
-        .limited           = 0,
         .passive           = 1,   /* passive — no scan requests */
-        .filter_duplicates = 0,   /* every packet = new RSSI sample */
     };
 
-    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &scan_params,
-                          gap_event_cb, NULL);
+    int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC,
+                              0,   /* duration 0 = continuous */
+                              0,   /* period 0 = continuous */
+                              0,   /* every packet = new RSSI sample */
+                              BLE_HCI_SCAN_FILT_NO_WL,
+                              0,
+                              NULL,
+                              &coded_scan_params,
+                              gap_event_cb,
+                              NULL);
     if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_disc failed: rc=%d", rc);
+        ESP_LOGE(TAG, "ble_gap_ext_disc failed: rc=%d", rc);
     }
 }
 
@@ -181,13 +205,7 @@ void ble_scan_init(void)
     ble_hs_cfg.sync_cb = ble_scan_on_sync;
     nimble_port_freertos_init(nimble_host_task);
 
-    /* Register NimBLE host task with TWDT so it doesn't trigger a spurious panic */
-    TaskHandle_t nimble_task_handle = xTaskGetHandle("nimble_host");
-    if (nimble_task_handle) {
-        esp_task_wdt_add(nimble_task_handle);
-    }
-
-    ESP_LOGI(TAG, "BLE passive scan init (interval=%d ms, alpha=%.1f)",
+    ESP_LOGI(TAG, "BLE Coded PHY passive scan init (interval=%d ms, alpha=%.1f)",
              ANCHOR_SCAN_INTERVAL_MS, (double)ANCHOR_EWA_ALPHA);
 }
 

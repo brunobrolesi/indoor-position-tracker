@@ -52,8 +52,7 @@ static volatile _Atomic uint16_t s_seq = 0;
 static esp_timer_handle_t s_adv_timer = NULL;
 static bool s_adv_running = false;
 
-/* Update advertising data with new sequence counter (advertising keeps running) */
-static void adv_send_one(void)
+static void build_adv_payload(uint8_t out[31])
 {
     uint16_t seq = atomic_fetch_add(&s_seq, 1);
 
@@ -83,10 +82,16 @@ static void adv_send_one(void)
     svc_data[23] = (uint8_t)((seq >> 8) & 0xFF);  /* Reserved[1]: seq high byte */
 
     /* Build flat buffer: Flags | SvcUUID16 | SvcData */
+    memcpy(out,      ADV_FLAGS, sizeof(ADV_FLAGS));
+    memcpy(out + 3,  SVC_UUID,  sizeof(SVC_UUID));
+    memcpy(out + 7,  svc_data,  sizeof(svc_data));
+}
+
+/* Update advertising data with new sequence counter. */
+static void adv_send_one(void)
+{
     uint8_t buf[31];
-    memcpy(buf,      ADV_FLAGS, sizeof(ADV_FLAGS));
-    memcpy(buf + 3,  SVC_UUID,  sizeof(SVC_UUID));
-    memcpy(buf + 7,  svc_data,  sizeof(svc_data));
+    build_adv_payload(buf);
 
     struct os_mbuf *data = os_msys_get_pkthdr(sizeof(buf), 0);
     if (!data) {

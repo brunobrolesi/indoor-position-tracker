@@ -1,11 +1,9 @@
 #include "anchor_config.h"
 #include "ble_scan.h"
 #include "led_status.h"
-#include "ota_update.h"
 #include "wifi_mqtt.h"
 
 #include "nvs_flash.h"
-#include "esp_ota_ops.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -23,10 +21,7 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
-    /* 2. Commit firmware on first post-OTA boot; no-op on cold boot */
-    esp_ota_mark_app_valid_cancel_rollback();
-
-    /* 3. Reconfigure TWDT and register main task */
+    /* 2. Reconfigure TWDT and register main task */
     esp_task_wdt_config_t wdt_cfg = {
         .timeout_ms    = ANCHOR_WDT_TIMEOUT_SEC * 1000,
         .trigger_panic = true,
@@ -34,23 +29,20 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&wdt_cfg));
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
-    /* 4. LED — slow amber blink while connecting */
+    /* 3. LED — slow amber blink while connecting */
     led_status_init();
     led_status_start();
     led_status_set(LED_CONNECTING);
 
-    /* 5. OTA check — returns immediately if trigger not asserted */
-    ota_check_and_run();
-
-    /* 6. WiFi + SNTP + MQTT — blocks until connected (LED → solid green on CONNACK) */
+    /* 4. WiFi + SNTP + MQTT — blocks until connected (LED → solid green on CONNACK) */
     wifi_mqtt_init();
 
-    /* 7. BLE passive scan — scanning starts from on_sync callback */
+    /* 5. BLE passive scan — scanning starts from on_sync callback */
     ble_scan_init();
 
     ESP_LOGI(TAG, "Boot complete — anchor %s running", ANCHOR_ID);
 
-    /* 8. Main scan-publish loop at ANCHOR_SCAN_INTERVAL_MS cadence */
+    /* 6. Main scan-publish loop at ANCHOR_SCAN_INTERVAL_MS cadence */
     int64_t last_heartbeat_ms = 0;
 
     while (true) {

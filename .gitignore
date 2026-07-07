@@ -1,0 +1,3 @@
+anchor/firmware/main/anchor_config_*.env
+anchor/firmware/main/anchor_config.env
+anchor/firmware/build/

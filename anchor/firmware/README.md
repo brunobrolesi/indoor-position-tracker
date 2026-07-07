@@ -7,32 +7,38 @@ Firmware for the three fixed anchor nodes. Each anchor passively scans BLE for t
 ## Prerequisites
 
 - **ESP-IDF v6.0** installed and activated (`source ~/.espressif/v6.0/esp-idf/export.sh`)
-- **Python 3** (for OTA HTTP server)
 - **MQTT broker** reachable on the lab LAN (e.g. Mosquitto)
 - **MQTT Explorer** or `mosquitto_sub` to verify publications
 
 ---
 
-## Per-anchor configuration
+## Anchor configuration
 
-Edit the unit-specific config file before flashing:
+Keep non-secret unit settings in the unit-specific config header:
 
 - `main/anchor_config_A1.h` — anchor A1
 - `main/anchor_config_A2.h` — anchor A2
 - `main/anchor_config_A3.h` — anchor A3
 
-Required fields to update (marked `CHANGE_ME`):
+Keep sensitive WiFi and MQTT connection values in one shared local env file. Copy the example file before building:
 
-```c
-#define ANCHOR_WIFI_SSID               "your-ssid"
-#define ANCHOR_WIFI_PASSWORD           "your-password"
-#define ANCHOR_MQTT_HOST               "192.168.x.x"
-#define ANCHOR_MQTT_USER               "your-mqtt-user"
-#define ANCHOR_MQTT_PASSWORD           "your-mqtt-password"
-#define ANCHOR_OTA_SERVER_URL          "http://192.168.x.x:8000/anchor.bin"
+```bash
+cp main/anchor_config.env.example main/anchor_config.env
 ```
 
-Update `ANCHOR_POS_X` / `ANCHOR_POS_Y` with the surveyed anchor coordinates (meters) before field flash.
+Required env fields:
+
+```env
+ANCHOR_WIFI_SSID=your-ssid
+ANCHOR_WIFI_PASSWORD=your-password
+ANCHOR_MQTT_HOST=192.168.x.x
+ANCHOR_MQTT_PORT=1883
+ANCHOR_MQTT_USER=your-mqtt-user
+ANCHOR_MQTT_PASSWORD=your-mqtt-password
+ANCHOR_MQTT_TLS_ENABLED=false
+```
+
+Build with `-DANCHOR_UNIT=A1`, `A2`, or `A3` to select the per-anchor config header. Update `ANCHOR_POS_X` / `ANCHOR_POS_Y` in each unit config with the surveyed anchor coordinates (meters) before field flash.
 
 ---
 
@@ -51,22 +57,6 @@ idf.py -p /dev/cu.usbserial-XXXX flash monitor
 idf.py -DANCHOR_UNIT=A3 build
 idf.py -p /dev/cu.usbserial-XXXX flash monitor
 ```
-
----
-
-## OTA update
-
-1. Build the new firmware: `idf.py -DANCHOR_UNIT=A1 build`
-2. Start an HTTP server in the build directory:
-   ```bash
-   cd build && python3 -m http.server 8000
-   ```
-3. Copy `anchor_firmware.bin` to a stable filename:
-   ```bash
-   cp build/anchor_firmware.bin build/anchor.bin
-   ```
-4. Hold the BOOT button (GPIO 0) and power-cycle the anchor. The LED blinks blue during download.
-5. On success, the device reboots into the new firmware. MQTT publications resume automatically.
 
 ---
 
@@ -91,7 +81,6 @@ mosquitto_sub -h 192.168.x.x -u user -P pass -t 'indoor/anchor/A1/rssi' | pv -l 
 |-----------------|-------|
 | Amber slow blink (500 ms) | Connecting to WiFi or MQTT |
 | Green solid | Connected and publishing |
-| Blue fast blink (100 ms) | OTA download in progress |
 | Red 3 rapid blinks | Controlled reboot (5 failed reconnects) |
 
 ---

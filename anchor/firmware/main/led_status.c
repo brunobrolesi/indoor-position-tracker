@@ -49,15 +49,6 @@ static void led_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
             break;
 
-        case LED_OTA:
-            /* Blue 100 ms on / 100 ms off */
-            led_set_color(0, 0, 255);
-            vTaskDelay(pdMS_TO_TICKS(100));
-            esp_task_wdt_reset();
-            led_off();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            break;
-
         case LED_REBOOT:
             /* 3 rapid red blinks then off — one-shot, then block */
             for (int i = 0; i < 3; i++) {
